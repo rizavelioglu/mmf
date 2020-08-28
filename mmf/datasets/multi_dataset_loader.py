@@ -34,6 +34,8 @@ class MultiDatasetLoader:
         self._num_datasets = 0
         self._finished_iterators = {}
 
+        self._did_build_datasets = False
+
     @property
     def dataset_type(self):
         return self._dataset_type
@@ -132,17 +134,28 @@ class MultiDatasetLoader:
             self.datasets.append(dataset_instance)
 
             if hasattr(dataset_instance, "__len__"):
-                self._per_dataset_lengths.append(len(dataset_instance))
-                self._total_length += len(dataset_instance)
+                dataset_instance_length = len(dataset_instance)
+                if dataset_instance_length:
+                    self._per_dataset_lengths.append(dataset_instance_length)
+                    self._total_length += dataset_instance_length
+                else:
+                    # Filter out datasets with no items
+                    self.datasets.pop()
 
         self._num_datasets = len(self.datasets)
-        self.current_index = 0
-        self.current_dataset = self.datasets[self.current_index]
+        if self._num_datasets:
+            self.current_index = 0
+            self.current_dataset = self.datasets[self.current_index]
 
         self._infer_dataset_probabilities()
+        self._did_build_datasets = True
 
     def build_dataloaders(self):
-        assert len(self._datasets) > 0, "Call build_datasets first"
+        if not self._did_build_datasets:
+            assert len(self._datasets) > 0, "Call build_datasets first"
+
+        if len(self.datasets) == 0:
+            return
 
         for dataset_instance in self.datasets:
             loader_instance, sampler_instance = build_dataloader_and_sampler(
@@ -176,9 +189,14 @@ class MultiDatasetLoader:
             self._proportional_sampling = True
 
         if self._proportional_sampling is True and len(self._per_dataset_lengths) > 0:
-            self._dataset_probabilities = self._per_dataset_lengths[:]
+            dataset_lengths = self._per_dataset_lengths[:]
+            dataset_lengths = [
+                # Empty datasets need to have some probability to prevent infinite loop
+                max(1, dataset_len)
+                for dataset_len in dataset_lengths
+            ]
             self._dataset_probabilities = [
-                prob / self._total_length for prob in self._dataset_probabilities
+                dataset_len / sum(dataset_lengths) for dataset_len in dataset_lengths
             ]
 
     def __len__(self):
@@ -232,6 +250,9 @@ class MultiDatasetLoader:
         Returns:
             SampleList: sample list instance from currently selected dataset
         """
+        if len(self._datasets) == 0:
+            raise StopIteration
+
         try:
             next_batch = next(self._chosen_iterator)
         except StopIteration:
