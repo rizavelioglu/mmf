@@ -14,7 +14,7 @@ from mmf.modules.bottleneck import MovieBottleneck
 from mmf.modules.layers import AttnPool1d, Identity
 from mmf.utils.file_io import PathManager
 from mmf.utils.vocab import Vocab
-from torch import nn
+from torch import Tensor, nn
 from transformers.modeling_bert import BertEmbeddings
 
 
@@ -324,12 +324,12 @@ class BertVisioLinguisticEmbeddings(BertEmbeddings):
 
     def forward(
         self,
-        input_ids,
-        token_type_ids=None,
-        visual_embeddings=None,
-        visual_embeddings_type=None,
-        position_embeddings_visual=None,
-        image_text_alignment=None,
+        input_ids: Tensor,
+        token_type_ids: Optional[Tensor] = None,
+        visual_embeddings: Optional[Tensor] = None,
+        visual_embeddings_type: Optional[Tensor] = None,
+        position_embeddings_visual: Optional[Tensor] = None,
+        image_text_alignment: Optional[Tensor] = None,
     ):
         """
         input_ids = [batch_size, sequence_length]
@@ -352,7 +352,7 @@ class BertVisioLinguisticEmbeddings(BertEmbeddings):
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
         embeddings = words_embeddings + position_embeddings + token_type_embeddings
 
-        if visual_embeddings is not None:
+        if visual_embeddings is not None and visual_embeddings_type is not None:
             visual_embeddings = self.projection(visual_embeddings)
             token_type_embeddings_visual = self.token_type_embeddings_visual(
                 visual_embeddings_type
@@ -362,7 +362,9 @@ class BertVisioLinguisticEmbeddings(BertEmbeddings):
                 # image_text_alignment = Batch x image_length x alignment_number.
                 # Each element denotes the position of the word corresponding to the
                 # image feature. -1 is the padding value.
-                image_text_alignment_mask = (image_text_alignment != -1).long()
+                image_text_alignment_mask = (
+                    (image_text_alignment != -1).long().to(image_text_alignment.device)
+                )
                 # Get rid of the -1.
                 image_text_alignment = image_text_alignment_mask * image_text_alignment
 
@@ -370,28 +372,24 @@ class BertVisioLinguisticEmbeddings(BertEmbeddings):
                 # = Batch x image_length x alignment length x dim
                 position_embeddings_visual = self.position_embeddings(
                     image_text_alignment
-                ) * image_text_alignment_mask.to(
-                    dtype=next(self.parameters()).dtype
-                ).unsqueeze(
-                    -1
-                )
+                ) * image_text_alignment_mask.unsqueeze(-1)
                 position_embeddings_visual = position_embeddings_visual.sum(2)
 
                 # We want to averge along the alignment_number dimension.
-                image_text_alignment_mask = image_text_alignment_mask.to(
-                    dtype=next(self.parameters()).dtype
-                ).sum(2)
+                image_text_alignment_mask = image_text_alignment_mask.sum(2)
                 image_text_alignment_mask[
                     image_text_alignment_mask == 0
-                ] = 1  # Avoid devide by zero error
+                ] = torch.tensor(
+                    [1]
+                )  # Avoid devide by zero error
                 position_embeddings_visual = (
                     position_embeddings_visual / image_text_alignment_mask.unsqueeze(-1)
                 )
 
                 position_ids_visual = torch.zeros(
-                    *visual_embeddings.size()[:-1],
+                    visual_embeddings.size()[:-1],
                     dtype=torch.long,
-                    device=visual_embeddings.device
+                    device=visual_embeddings.device,
                 )
 
                 # When fine-tuning the detector , the image_text_alignment is
@@ -410,9 +408,9 @@ class BertVisioLinguisticEmbeddings(BertEmbeddings):
                 )
             else:
                 position_ids_visual = torch.zeros(
-                    *visual_embeddings.size()[:-1],
+                    visual_embeddings.size()[:-1],
                     dtype=torch.long,
-                    device=visual_embeddings.device
+                    device=visual_embeddings.device,
                 )
                 position_embeddings_visual = self.position_embeddings_visual(
                     position_ids_visual
