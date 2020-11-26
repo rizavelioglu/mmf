@@ -3,6 +3,7 @@
 import copy
 from typing import Any, Dict, List, Optional, Tuple
 
+import omegaconf
 import torch
 from mmf.common.registry import registry
 from mmf.common.typings import DictConfig
@@ -12,8 +13,8 @@ from mmf.modules.embeddings import (
     TextEmbedding,
     TwoBranchEmbedding,
 )
-from mmf.modules.encoders import ImageFeatureEncoder
 from mmf.modules.layers import BranchCombineLayer, ClassifierLayer
+from mmf.utils.build import build_image_encoder
 from mmf.utils.general import filter_grads
 
 
@@ -28,6 +29,13 @@ class MoVieMcan(BaseModel):
     @classmethod
     def config_path(cls):
         return "configs/models/movie_mcan/defaults.yaml"
+
+    @classmethod
+    def format_state_key(cls, key):
+        key = key.replace(
+            "image_feature_encoders.0.module.lc", "image_feature_encoders.0.lc"
+        )
+        return key
 
     def build(self):
         self.image_feature_dim = 2048
@@ -68,12 +76,11 @@ class MoVieMcan(BaseModel):
         feature_dim = self.config[attr + "_feature_dim"]
         setattr(self, attr + "_feature_dim", feature_dim)
 
-        encoder_type = feat_encoder.type
-        encoder_kwargs = copy.deepcopy(feat_encoder.params)
-        encoder_kwargs.model_data_dir = self.config.model_data_dir
-        encoder_kwargs.cond_features = self.text_embeddings_out_dim
-
-        feat_model = ImageFeatureEncoder(encoder_type, feature_dim, **encoder_kwargs)
+        feat_encoder_config = copy.deepcopy(feat_encoder)
+        with omegaconf.open_dict(feat_encoder_config):
+            feat_encoder_config.params.model_data_dir = self.config.model_data_dir
+            feat_encoder_config.params.in_dim = feature_dim
+        feat_model = build_image_encoder(feat_encoder_config, direct_features=True)
 
         setattr(self, attr + "_feature_dim", feat_model.out_dim)
         setattr(self, attr + "_feature_encoders", feat_model)

@@ -3757,10 +3757,10 @@ doctrine@^3.0.0:
   dependencies:
     esutils "^2.0.2"
 
-docusaurus-plugin-internaldocs-fb@^0.3.6:
-  version "0.3.6"
-  resolved "https://registry.yarnpkg.com/docusaurus-plugin-internaldocs-fb/-/docusaurus-plugin-internaldocs-fb-0.3.6.tgz#8fb6385f75e06e636866aa3d926d760a9e25bde3"
-  integrity sha512-pdK+epVpDGAjLKMU6iVOiTO9OTC0u7Y5yI0M+/8Xa+lxkeiyhNXj67wtWtkUGzkKqtpLAkqS50RcEE9hi3dnJA==
+docusaurus-plugin-internaldocs-fb@^0.5.2:
+  version "0.5.2"
+  resolved "https://registry.yarnpkg.com/docusaurus-plugin-internaldocs-fb/-/docusaurus-plugin-internaldocs-fb-0.5.2.tgz#635a8a7958aa64b71a92b1424a6f2a1f3d8f75a5"
+  integrity sha512-BW/Qv3P3Ztil0W3SQExL/Yq2wLEJ+IfsoGZo+3v5Gfd/fV/Oqe1EfnrW40fqhfKJFNnTKuSdP77dL8UGV0ejHA==
 
 doiuse@^2.3.0:
   version "2.6.0"
@@ -5673,6 +5673,11 @@ internal-slot@^1.0.2:
     es-abstract "^1.17.0-next.1"
     has "^1.0.3"
     side-channel "^1.0.2"
+
+internaldocs-fb-helpers@^1.1.0:
+  version "1.1.0"
+  resolved "https://registry.yarnpkg.com/internaldocs-fb-helpers/-/internaldocs-fb-helpers-1.1.0.tgz#b2bbcfd06e7c902bd73d2d5e4208019db06935e4"
+  integrity sha512-KnVBhR88NNVklckj39wGu489i8wsUhlbLXXSsySas9lV5LWIZml6s/X0Zo1yzglAzzPxCv3OQw+pW7BGYwaMvw==
 
 interpret@^1.0.0:
   version "1.2.0"

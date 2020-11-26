@@ -2,8 +2,9 @@
 
 import os
 import warnings
-from typing import Any, Dict, Type
+from typing import Any, Dict, Type, Union
 
+import mmf
 import torch
 from mmf.common import typings as mmf_typings
 from mmf.common.registry import registry
@@ -11,7 +12,7 @@ from mmf.datasets.processors.processors import Processor
 from mmf.utils.configuration import Configuration
 from mmf.utils.distributed import is_dist_initialized
 from mmf.utils.general import get_optimizer_parameters
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 
 ProcessorType = Type[Processor]
@@ -57,9 +58,16 @@ def build_trainer(config: mmf_typings.DictConfig) -> Any:
     return trainer_obj
 
 
-def build_model(config):
-    model_name = config.model
+def build_model(
+    config: Union[DictConfig, "mmf.models.base_model.BaseModel.Config"]
+) -> "mmf.models.base_model.BaseModel":
+    from mmf.models.base_model import BaseModel
 
+    # If it is not an OmegaConf object, create the object
+    if not isinstance(config, DictConfig) and isinstance(config, BaseModel.Config):
+        config = OmegaConf.structured(config)
+
+    model_name = config.model
     model_class = registry.get_model_class(model_name)
 
     if model_class is None:
@@ -218,7 +226,24 @@ def build_optimizer(model, config):
             )
 
     parameters = get_optimizer_parameters(model, config)
-    optimizer = optimizer_class(parameters, **params)
+
+    if optimizer_config.get("enable_state_sharding", False):
+        # TODO(vedanuj): Remove once OSS is moved to PT upstream
+        try:
+            from fairscale.optim.oss import OSS
+        except ImportError:
+            print(
+                "Optimizer state sharding requires fairscale. "
+                + "Install using pip install fairscale."
+            )
+            raise
+
+        assert (
+            is_dist_initialized()
+        ), "Optimizer state sharding can only be used in distributed mode."
+        optimizer = OSS(params=parameters, optim=optimizer_class, **params)
+    else:
+        optimizer = optimizer_class(parameters, **params)
     return optimizer
 
 
@@ -249,20 +274,47 @@ def build_classifier_layer(config, *args, **kwargs):
 
 
 def build_text_encoder(config, *args, **kwargs):
-    from mmf.modules.encoders import TextEncoder
+    try:
+        from mmf.modules.fb.encoders import TextEncoderFactory
+    except ImportError:
+        from mmf.modules.encoders import TextEncoderFactory
 
-    text_encoder = TextEncoder(config, *args, **kwargs)
+    text_encoder = TextEncoderFactory(config, *args, **kwargs)
     return text_encoder.module
 
 
 def build_image_encoder(config, direct_features=False, **kwargs):
-    from mmf.modules.encoders import ImageEncoder, ImageFeatureEncoder
+    from mmf.modules.encoders import ImageEncoderFactory, ImageFeatureEncoderFactory
 
     if direct_features:
-        module = ImageFeatureEncoder(config.type, **config.params)
+        module = ImageFeatureEncoderFactory(config)
     else:
-        module = ImageEncoder(config)
+        module = ImageEncoderFactory(config)
     return module.module
+
+
+def build_encoder(config: Union[DictConfig, "mmf.modules.encoders.Encoder.Config"]):
+    from mmf.modules.encoders import Encoder
+
+    # If it is not an OmegaConf object, create the object
+    if not isinstance(config, DictConfig) and isinstance(config, Encoder.Config):
+        config = OmegaConf.structured(config)
+
+    if "type" in config:
+        # Support config initialization in form of
+        # encoder:
+        #   type: identity # noqa
+        #   params:
+        #       in_dim: 256
+        name = config.type
+        params = config.params
+    else:
+        # Structured Config support
+        name = config.name
+        params = config
+
+    encoder_cls = registry.get_encoder_class(name)
+    return encoder_cls(params)
 
 
 def build_processors(

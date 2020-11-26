@@ -13,7 +13,7 @@ from mmf.utils.configuration import get_mmf_env, load_yaml
 from mmf.utils.distributed import is_master, synchronize
 from mmf.utils.download import download_pretrained_model
 from mmf.utils.file_io import PathManager
-from mmf.utils.general import updir
+from mmf.utils.general import get_current_device, updir
 from omegaconf import OmegaConf
 
 
@@ -80,6 +80,11 @@ def load_pretrained_model(model_name_or_path, *args, **kwargs):
     return {"config": model_config, "checkpoint": ckpt, "full_config": config}
 
 
+def consolidate_optim_state_dict(optimizer):
+    if hasattr(optimizer, "consolidate_state_dict"):
+        optimizer.consolidate_state_dict(recipient_rank=0)
+
+
 class Checkpoint:
     def __init__(self, trainer):
         """
@@ -91,11 +96,8 @@ class Checkpoint:
         self.config = self.trainer.config
         self.save_dir = get_mmf_env(key="save_dir")
         self.model_name = self.config.model
-
         self.ckpt_foldername = self.save_dir
-
-        self.device = registry.get("current_device")
-
+        self.device = get_current_device()
         self.ckpt_prefix = ""
 
         if hasattr(self.trainer.model, "get_ckpt_name"):
@@ -183,10 +185,7 @@ class Checkpoint:
         else:
             ckpt = self._torch_load(file)
 
-        if "model" in ckpt:
-            ckpt_model = ckpt["model"]
-        else:
-            ckpt_model = ckpt
+        if "model" not in ckpt:
             ckpt = {"model": ckpt}
 
         pretrained_state_mapping = ckpt_config.pretrained_state_mapping
@@ -194,26 +193,47 @@ class Checkpoint:
         if not load_pretrained or force is True:
             pretrained_state_mapping = {}
 
-        new_dict = {}
-
-        new_dict = self.upgrade_state_dict(ckpt_model)
+        state_dict = self.upgrade_state_dict(ckpt["model"])
 
         if len(pretrained_state_mapping.items()) == 0:
-            final_dict = new_dict
+            incompatible_keys = self.trainer.model.load_state_dict(
+                state_dict, strict=False
+            )
+            if len(incompatible_keys.missing_keys) != 0:
+                logger.warning(
+                    f"Missing keys {incompatible_keys.missing_keys} in the"
+                    + " checkpoint.\n"
+                    + "If this is not your checkpoint, please open up an "
+                    + "issue on MMF GitHub. \n"
+                    + f"Unexpected keys if any: {incompatible_keys.unexpected_keys}"
+                )
 
-            self.trainer.model.load_state_dict(final_dict, strict=False)
+            if len(incompatible_keys.unexpected_keys) != 0:
+                logger.warning(
+                    "Unexpected keys in state dict: "
+                    + f"{incompatible_keys.unexpected_keys} \n"
+                    + "This is usually not a problem with pretrained models, but "
+                    + "if this is your own model, please double check. \n"
+                    + "If you think this is an issue, please open up a "
+                    + "bug at MMF GitHub."
+                )
 
             reset_optimizer = ckpt_config.reset.optimizer or ckpt_config.reset.all
             if not reset_optimizer:
                 self._load_optimizer(ckpt)
 
-            self.trainer.early_stop_callback.early_stopping.init_from_checkpoint(ckpt)
             reset_counts = ckpt_config.reset.all or ckpt_config.reset.counts
-
             if not reset_counts:
+                self.trainer.early_stop_callback.early_stopping.init_from_checkpoint(
+                    ckpt
+                )
                 self._load_counts_and_lr_scheduler(ckpt)
+
+            reset_scaler = ckpt_config.reset.all or ckpt_config.reset.fp16_scaler
+            if not reset_scaler:
+                self._load_fp16_scaler(ckpt)
         else:
-            self._load_pretrained(new_dict)
+            self._load_pretrained(state_dict)
 
         logger.info("Checkpoint loaded.")
         logger.info(f"Current num updates: {self.trainer.num_updates}")
@@ -287,6 +307,12 @@ class Checkpoint:
         self.trainer.current_epoch = ckpt.get("best_epoch", self.trainer.current_epoch)
         registry.register("current_epoch", self.trainer.current_epoch)
 
+    def _load_fp16_scaler(self, ckpt):
+        scaler = getattr(self.trainer, "scaler", None)
+        scaler_dict = ckpt.get("fp16_scaler", None)
+        if scaler is not None and scaler_dict is not None:
+            scaler.load_state_dict(scaler_dict)
+
     def _load_pretrained(self, ckpt):
         model = self.trainer.model
         own_state = model.state_dict()
@@ -316,18 +342,26 @@ class Checkpoint:
             self.trainer.model,
             (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel),
         )
+        if data_parallel:
+            model = self.trainer.model.module
+        else:
+            model = self.trainer.model
+
         new_dict = {}
         for attr in state_dict:
-            new_attr = attr
-
+            new_attr = model.format_state_key(attr)
             if not data_parallel and attr.startswith("module."):
                 # In case the ckpt was actually a data parallel model
                 # replace first module. from dataparallel with empty string
-                new_dict[new_attr.replace("module.", "", 1)] = state_dict[attr]
+                new_attr = new_attr.replace("module.", "", 1)
             elif data_parallel and not attr.startswith("module."):
-                new_dict["module." + new_attr] = state_dict[attr]
-            else:
-                new_dict[new_attr] = state_dict[attr]
+                new_attr = "module." + new_attr
+
+            # Log if key has changed but not when the difference
+            # is only due to data parallel's `module`
+            if new_attr != attr and ("module." + new_attr != attr):
+                logger.info(f"Will load key {new_attr} from {attr}")
+            new_dict[new_attr] = state_dict[attr]
         return new_dict
 
     def _load_from_zoo(self, file):
@@ -402,6 +436,11 @@ class Checkpoint:
         )
         model = self.trainer.model
         data_parallel = registry.get("data_parallel") or registry.get("distributed")
+        fp16_scaler = getattr(self.trainer, "scaler", None)
+        fp16_scaler_dict = None
+
+        if fp16_scaler is not None:
+            fp16_scaler_dict = fp16_scaler.state_dict()
 
         if data_parallel is True:
             model = model.module
@@ -415,6 +454,7 @@ class Checkpoint:
             "num_updates": update,
             "best_update": best_update,
             "best_metric_value": best_metric,
+            "fp16_scaler": fp16_scaler_dict,
             # Convert to container to avoid any dependencies
             "config": OmegaConf.to_container(self.config, resolve=True),
         }

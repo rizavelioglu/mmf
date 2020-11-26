@@ -1,35 +1,86 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 import os
 import pickle
+from copy import deepcopy
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
 import torch
 import torchvision
+from mmf.common.registry import registry
 from mmf.modules.embeddings import ProjectionEmbedding, TextEmbedding
+from mmf.modules.hf_layers import BertModelJit
 from mmf.modules.layers import Identity
 from mmf.utils.build import build_image_encoder, build_text_encoder
-from mmf.utils.configuration import get_mmf_cache_dir
 from mmf.utils.download import download_pretrained_model
 from mmf.utils.file_io import PathManager
 from mmf.utils.general import get_absolute_path
-from omegaconf import OmegaConf
+from omegaconf import MISSING, OmegaConf
 from torch import nn
 from transformers.configuration_auto import AutoConfig
 from transformers.modeling_auto import AutoModel
 
 
-class ImageFeatureEncoder(nn.Module):
-    def __init__(self, encoder_type, in_dim, **kwargs):
+class Encoder(nn.Module):
+    @dataclass
+    class Config:
+        name: str = MISSING
+
+    @classmethod
+    def from_params(cls, **kwargs):
+        config = OmegaConf.structured(cls.Config(**kwargs))
+        return cls(config)
+
+
+class EncoderFactory(nn.Module):
+    @dataclass
+    class Config:
+        type: str = MISSING
+        params: Encoder.Config = MISSING
+
+
+class ImageFeatureEncoderTypes(Enum):
+    default = "default"
+    identity = "identity"
+    projection = "projection"
+    frcnn_fc7 = "finetune_faster_rcnn_fpn_fc7"
+
+
+class ImageFeatureEncoder(Encoder):
+    @dataclass
+    class Config(Encoder.Config):
+        in_dim: int = MISSING
+
+
+class ImageFeatureEncoderFactory(EncoderFactory):
+    @dataclass
+    class Config(EncoderFactory.Config):
+        type: ImageFeatureEncoderTypes = MISSING
+        params: ImageFeatureEncoder.Config = MISSING
+
+    def __init__(self, config: Config, *args, **kwargs):
         super().__init__()
+        encoder_type = config.type
+        if isinstance(encoder_type, ImageFeatureEncoderTypes):
+            encoder_type = encoder_type.value
+
+        assert (
+            "in_dim" in config.params
+        ), "ImageFeatureEncoder require 'in_dim' param in config"
+        params = config.params
 
         if encoder_type == "default" or encoder_type == "identity":
             self.module = Identity()
-            self.module.in_dim = in_dim
-            self.module.out_dim = in_dim
+            self.module.in_dim = params.in_dim
+            self.module.out_dim = params.in_dim
         elif encoder_type == "projection":
-            module_type = kwargs.pop("module", "linear")
-            self.module = ProjectionEmbedding(module_type, in_dim, **kwargs)
+            if "module" not in params:
+                params = deepcopy(params)
+                params.module = "linear"
+            self.module = ProjectionEmbedding(**params)
         elif encoder_type == "finetune_faster_rcnn_fpn_fc7":
-            self.module = FinetuneFasterRcnnFpnFc7(in_dim, **kwargs)
+            self.module = FinetuneFasterRcnnFpnFc7(params)
         else:
             raise NotImplementedError("Unknown Image Encoder: %s" % encoder_type)
 
@@ -39,17 +90,24 @@ class ImageFeatureEncoder(nn.Module):
         return self.module(*args, **kwargs)
 
 
-class FinetuneFasterRcnnFpnFc7(nn.Module):
-    def __init__(
-        self, in_dim, weights_file, bias_file, model_data_dir, *args, **kwargs
-    ):
-        super().__init__()
-        model_data_dir = get_absolute_path(model_data_dir)
+@registry.register_encoder("finetune_faster_rcnn_fpn_fc7")
+class FinetuneFasterRcnnFpnFc7(ImageFeatureEncoder):
+    @dataclass
+    class Config(ImageFeatureEncoder.Config):
+        name: str = "finetune_faster_rcnn_fpn_fc7"
+        in_dim: int = MISSING
+        weights_file: str = "fc7_w.pkl"
+        bias_file: str = "fc7_b.pkl"
+        model_data_dir: str = MISSING
 
-        if not os.path.isabs(weights_file):
-            weights_file = os.path.join(model_data_dir, weights_file)
-        if not os.path.isabs(bias_file):
-            bias_file = os.path.join(model_data_dir, bias_file)
+    def __init__(self, config: Config, *args, **kwargs):
+        super().__init__()
+        model_data_dir = get_absolute_path(config.model_data_dir)
+
+        if not os.path.isabs(config.weights_file):
+            weights_file = os.path.join(model_data_dir, config.weights_file)
+        if not os.path.isabs(config.bias_file):
+            bias_file = os.path.join(model_data_dir, config.bias_file)
 
         if not PathManager.exists(bias_file) or not PathManager.exists(weights_file):
             download_path = download_pretrained_model("detectron.vmb_weights")
@@ -62,7 +120,7 @@ class FinetuneFasterRcnnFpnFc7(nn.Module):
             bias = pickle.load(b)
         out_dim = bias.shape[0]
 
-        self.lc = nn.Linear(in_dim, out_dim)
+        self.lc = nn.Linear(config.in_dim, out_dim)
         self.lc.weight.data.copy_(torch.from_numpy(weights))
         self.lc.bias.data.copy_(torch.from_numpy(bias))
         self.out_dim = out_dim
@@ -73,13 +131,44 @@ class FinetuneFasterRcnnFpnFc7(nn.Module):
         return i3
 
 
-class ImageEncoder(nn.Module):
-    def __init__(self, config, *args, **kwargs):
+@registry.register_encoder("identity")
+class IdentityEncoder(Encoder):
+    @dataclass
+    class Config(Encoder.Config):
+        name: str = "identity"
+        in_dim: int = MISSING
+
+    def __init__(self, config: Config):
+        super().__init__()
+        self.module = nn.Identity()
+        self.in_dim = config.in_dim
+        self.out_dim = config.in_dim
+
+    def forward(self, x):
+        return self.module(x)
+
+
+class ImageEncoderTypes(Enum):
+    default = "default"
+    identity = "identity"
+    resnet152 = "resnet152"
+
+
+class ImageEncoderFactory(EncoderFactory):
+    @dataclass
+    class Config(EncoderFactory.Config):
+        type: ImageEncoderTypes = MISSING
+
+    def __init__(self, config: Config, *args, **kwargs):
         super().__init__()
         self._type = config.type
+
+        if isinstance(self._type, ImageEncoderTypes):
+            self._type = self._type.value
+
         params = config.params
 
-        if self._type == "default":
+        if self._type == "default" or self._type == "identity":
             self.module = nn.Identity()
             self.module.out_dim = params.in_dim
         elif self._type == "resnet152":
@@ -96,8 +185,17 @@ class ImageEncoder(nn.Module):
 
 
 # Taken from facebookresearch/mmbt with some modifications
-class ResNet152ImageEncoder(nn.Module):
-    def __init__(self, config, *args, **kwargs):
+@registry.register_encoder("resnet152")
+class ResNet152ImageEncoder(Encoder):
+    @dataclass
+    class Config(Encoder.Config):
+        name: str = "resnet152"
+        pretrained: bool = True
+        # "avg" or "adaptive"
+        pool_type: str = "avg"
+        num_output_features: int = 1
+
+    def __init__(self, config: Config, *args, **kwargs):
         super().__init__()
         self.config = config
         model = torchvision.models.resnet152(pretrained=config.get("pretrained", True))
@@ -132,10 +230,24 @@ class ResNet152ImageEncoder(nn.Module):
         return out  # BxNx2048
 
 
-class TextEncoder(nn.Module):
-    def __init__(self, config, *args, **kwargs):
+class TextEncoderTypes(Enum):
+    identity = "identity"
+    transformer = "transformer"
+    embedding = "embedding"
+
+
+class TextEncoderFactory(EncoderFactory):
+    @dataclass
+    class Config(EncoderFactory.Config):
+        # identity, transformer or embedding as of now
+        type: TextEncoderTypes = MISSING
+        params: Encoder.Config = MISSING
+
+    def __init__(self, config: Config, *args, **kwargs):
         super().__init__()
         self._type = config.type
+        if isinstance(self._type, TextEncoderTypes):
+            self._type = self._type.value
 
         if self._type == "identity":
             self.module = nn.Identity()
@@ -151,8 +263,17 @@ class TextEncoder(nn.Module):
         return self.module(*args, **kwargs)
 
 
-class TextEmbeddingEncoder(nn.Module):
-    def __init__(self, config):
+@registry.register_encoder("text_embedding")
+class TextEmbeddingEncoder(Encoder):
+    @dataclass
+    class Config(Encoder.Config):
+        name: str = "text_embedding"
+        operator: str = MISSING
+        # Keeping this Any for now as this
+        # needs a separate refactor PR.
+        embedding_params: Any = MISSING
+
+    def __init__(self, config: Config):
         super().__init__()
         self._operator = config.operator
         self._embedding_params = config.embedding_params
@@ -173,15 +294,42 @@ class TextEmbeddingEncoder(nn.Module):
         return x.squeeze()
 
 
-class TransformerEncoder(nn.Module):
-    def __init__(self, config, *args, **kwargs):
+@registry.register_encoder("transformer")
+class TransformerEncoder(Encoder):
+    @dataclass
+    class Config(Encoder.Config):
+        name: str = "transformer"
+        num_segments: int = 2
+        bert_model_name: str = "bert-base-uncased"
+        # Options below can be overridden to update the bert configuration used
+        # to initialize the bert encoder. If some option is missing or
+        # if you are using an encoder different then BERT, add extra parameters
+        # by inheriting and extending this config
+        # Those options will automatically override the options for your transformer
+        # encoder's configuration. For e.g. vocab_size is missing here, just add
+        # vocab_size: x to update the size of the vocabulary with which encoder is
+        # initialized. If you update the default values, the transformer you
+        # will get will be initialized from scratch.
+        hidden_size: int = 768
+        num_hidden_layers: int = 12
+        num_attention_heads: int = 12
+        output_attentions: bool = False
+        output_hidden_states: bool = False
+
+    def __init__(self, config: Config, *args, **kwargs):
         super().__init__()
         self.config = config
-        self.module = AutoModel.from_pretrained(
-            self.config.bert_model_name,
-            config=self._build_encoder_config(config),
-            cache_dir=os.path.join(get_mmf_cache_dir(), "distributed_{}".format(-1)),
-        )
+        hf_params = {"config": self._build_encoder_config(config)}
+
+        # For BERT models, initialize using Jit version
+        if self.config.bert_model_name.startswith("bert-"):
+            self.module = BertModelJit.from_pretrained(
+                self.config.bert_model_name, **hf_params
+            )
+        else:
+            self.module = AutoModel.from_pretrained(
+                self.config.bert_model_name, **hf_params
+            )
         self.embeddings = self.module.embeddings
         self.original_config = self.config
         self.config = self.module.config
@@ -201,7 +349,7 @@ class TransformerEncoder(nn.Module):
                     )
                 self.embeddings.token_type_embeddings = new_embeds
 
-    def _build_encoder_config(self, config):
+    def _build_encoder_config(self, config: Config):
         return AutoConfig.from_pretrained(
             self.config.bert_model_name, **OmegaConf.to_container(self.config)
         )
@@ -211,8 +359,23 @@ class TransformerEncoder(nn.Module):
         return self.module(*args, **kwargs)[1]
 
 
-class MultiModalEncoderBase(nn.Module):
-    def __init__(self, config, *args, **kwargs):
+class MultiModalEncoderBase(Encoder):
+    __jit_unused_properties__ = ["encoder_config"]
+
+    @dataclass
+    class Config(Encoder.Config):
+        # This actually is Union[ImageEncoderConfig, ImageFeatureEncoderConfig]
+        modal_encoder: EncoderFactory.Config = ImageEncoderFactory.Config(
+            type=ImageEncoderTypes.resnet152, params=ResNet152ImageEncoder.Config()
+        )
+        text_encoder: EncoderFactory.Config = TextEncoderFactory.Config(
+            type=TextEncoderTypes.transformer, params=TransformerEncoder.Config()
+        )
+        direct_features_input: bool = False
+        modal_hidden_size: int = 2048
+        text_hidden_size: int = 768
+
+    def __init__(self, config: Config, *args, **kwargs):
         super().__init__()
         self.config = config
 

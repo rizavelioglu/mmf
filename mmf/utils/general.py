@@ -24,24 +24,17 @@ def lr_lambda_update(i_iter, cfg):
         return pow(cfg.training.lr_ratio, idx)
 
 
-def clip_gradients(model, i_iter, writer, config):
-    # TODO: Fix question model retrieval
+def clip_gradients(model, i_iter, writer, config, scale=1.0):
     max_grad_l2_norm = config.training.max_grad_l2_norm
     clip_norm_mode = config.training.clip_norm_mode
 
     if max_grad_l2_norm is not None:
         if clip_norm_mode == "all":
-            norm = nn.utils.clip_grad_norm_(model.parameters(), max_grad_l2_norm)
-            if writer is not None:
-                writer.add_scalars({"grad_norm": norm}, i_iter)
-
-        elif clip_norm_mode == "question":
-            question_embedding = model.module.question_embedding_module
-            norm = nn.utils.clip_grad_norm(
-                question_embedding.parameters(), max_grad_l2_norm
+            norm = nn.utils.clip_grad_norm_(
+                model.parameters(), max_grad_l2_norm * scale
             )
             if writer is not None:
-                writer.add_scalars({"question_grad_norm": norm}, i_iter)
+                writer.add_scalars({"grad_norm": norm}, i_iter)
         else:
             raise NotImplementedError(
                 "Clip norm mode %s not implemented" % clip_norm_mode
@@ -143,7 +136,44 @@ def get_optimizer_parameters(model, config):
     if is_parallel and hasattr(model.module, "get_optimizer_parameters"):
         parameters = model.module.get_optimizer_parameters(config)
 
+    # If parameters are a generator, convert to a list first
+    parameters = list(parameters)
+
+    if len(parameters) == 0:
+        raise ValueError("optimizer got an empty parameter list")
+
+    # If parameters are in format of list, instead of grouped params
+    # convert them to grouped params form
+    if not isinstance(parameters[0], dict):
+        parameters = [{"params": parameters}]
+
+    for group in parameters:
+        group["params"] = list(group["params"])
+
+    check_unused_parameters(parameters, model, config)
+
     return parameters
+
+
+def check_unused_parameters(parameters, model, config):
+    optimizer_param_set = {p for group in parameters for p in group["params"]}
+    unused_param_names = []
+    for n, p in model.named_parameters():
+        if p.requires_grad and p not in optimizer_param_set:
+            unused_param_names.append(n)
+    if len(unused_param_names) > 0:
+        logger.info(
+            "Model parameters not used by optimizer: {}".format(
+                " ".join(unused_param_names)
+            )
+        )
+        if not config.optimizer.allow_unused_parameters:
+            raise Exception(
+                "Found model parameters not used by optimizer. Please check the "
+                "model's get_optimizer_parameters and add all parameters. If this "
+                "is intended, set optimizer.allow_unused_parameters to True to "
+                "ignore it."
+            )
 
 
 def dict_to_string(dictionary):
@@ -286,3 +316,10 @@ def assert_iterator_finished(iter):
         pass
     else:
         assert False
+
+
+def get_current_device():
+    if torch.cuda.is_available():
+        return f"cuda:{torch.cuda.current_device()}"
+    else:
+        return torch.device("cpu")

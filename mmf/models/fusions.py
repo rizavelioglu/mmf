@@ -1,4 +1,5 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
+import collections
 from copy import deepcopy
 
 import torch
@@ -42,8 +43,9 @@ class FusionBase(MultiModalEncoderBase):
             modal_kwargs = {}
         text = self.text(text, *text_args, **text_kwargs)
 
-        # Case of bert encoder, we only need pooled output
-        if len(text) == 2:
+        # Case of bert encoder, we only need pooled output. For BertModelJIT encoder
+        # pooled output is the 2nd in the tuple(sequence, pooled, encoded_layers)
+        if isinstance(text, collections.abc.Sequence) and len(text) >= 2:
             text = text[1]
 
         modal = self.modal(modal, *modal_args, **modal_kwargs)

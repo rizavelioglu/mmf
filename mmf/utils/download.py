@@ -140,7 +140,7 @@ class DownloadableFile:
             self.checksum(download_path)
         except AssertionError:
             # File exists but checksum has changed. Will be redownloaded
-            print("[ Checksum changed for {}. Redownloading")
+            print(f"[ Checksum changed for {download_path}. Redownloading]")
             redownload = True
 
         if self._from_google:
@@ -421,6 +421,13 @@ def move(path1, path2):
     Rename the given file.
     """
     shutil.move(path1, path2)
+
+
+def copy(path1, path2):
+    """
+    Copy the given file from path1 to path2.
+    """
+    shutil.copy(path1, path2)
 
 
 def remove_dir(path):

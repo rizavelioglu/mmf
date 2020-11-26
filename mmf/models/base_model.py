@@ -41,15 +41,22 @@ Example::
 
 
 import collections
+import logging
 import warnings
 from copy import deepcopy
+from dataclasses import dataclass
+from typing import Union
 
 from mmf.common.registry import registry
 from mmf.common.sample import to_device
 from mmf.modules.losses import Losses
 from mmf.utils.checkpoint import load_pretrained_model
 from mmf.utils.download import download_pretrained_model
+from omegaconf import MISSING, DictConfig, OmegaConf
 from torch import nn
+
+
+logger = logging.getLogger(__name__)
 
 
 class BaseModel(nn.Module):
@@ -63,18 +70,30 @@ class BaseModel(nn.Module):
 
     """
 
-    def __init__(self, config):
+    @dataclass
+    class Config:
+        # Name of the model that is used in registry
+        model: str = MISSING
+
+    def __init__(self, config: Union[DictConfig, Config]):
         super().__init__()
+        if not isinstance(config, DictConfig) and isinstance(config, self.Config):
+            config = OmegaConf.structured(config)
+
         self.config = config
         self._logged_warning = {"losses_present": False}
         self._is_pretrained = False
+
+    @classmethod
+    def from_params(cls, **kwargs):
+        return cls(OmegaConf.structured(cls.Config(**kwargs)))
 
     @property
     def is_pretrained(self):
         return self._is_pretrained
 
     @is_pretrained.setter
-    def is_pretrained(self, x):
+    def is_pretrained(self, x: bool):
         self._is_pretrained = x
 
     def build(self):
@@ -170,8 +189,10 @@ class BaseModel(nn.Module):
             assert isinstance(
                 model_output["losses"], collections.abc.Mapping
             ), "'losses' must be a dict."
-        else:
+        elif hasattr(self, "losses"):
             model_output["losses"] = self.losses(sample_list, model_output)
+        else:
+            model_output["losses"] = {}
 
         return model_output
 
@@ -207,7 +228,27 @@ class BaseModel(nn.Module):
         instance = cls(config)
         instance.is_pretrained = True
         instance.build()
-        instance.load_state_dict(checkpoint)
+        incompatible_keys = instance.load_state_dict(checkpoint, strict=False)
+
+        if len(incompatible_keys.missing_keys) != 0:
+            logger.warning(
+                f"Missing keys {incompatible_keys.missing_keys} in the"
+                + " checkpoint.\n"
+                + "If this is not your checkpoint, please open up an "
+                + "issue on MMF GitHub. \n"
+                + f"Unexpected keys if any: {incompatible_keys.unexpected_keys}"
+            )
+
+        if len(incompatible_keys.unexpected_keys) != 0:
+            logger.warning(
+                "Unexpected keys in state dict: "
+                + f"{incompatible_keys.unexpected_keys} \n"
+                + "This is usually not a problem with pretrained models, but "
+                + "if this is your own model, please double check. \n"
+                + "If you think this is an issue, please open up a "
+                + "bug at MMF GitHub."
+            )
+
         instance.eval()
 
         return instance

@@ -6,10 +6,9 @@ and more granular
 import logging
 
 import numpy as np
-from mmf.common.registry import registry
 from mmf.utils.build import build_dataloader_and_sampler, build_dataset
 from mmf.utils.distributed import broadcast_scalar, is_dist_initialized, is_master
-from mmf.utils.general import get_batch_size
+from mmf.utils.general import get_batch_size, get_current_device
 
 
 logger = logging.getLogger(__name__)
@@ -132,8 +131,10 @@ class MultiDatasetLoader:
             self.datasets.append(dataset_instance)
 
             if hasattr(dataset_instance, "__len__"):
-                self._per_dataset_lengths.append(len(dataset_instance))
-                self._total_length += len(dataset_instance)
+                dataset_instance_length = len(dataset_instance)
+                assert dataset_instance_length, f"dataset: {self.dataset_type} is empty"
+                self._per_dataset_lengths.append(dataset_instance_length)
+                self._total_length += dataset_instance_length
 
         self._num_datasets = len(self.datasets)
         self.current_index = 0
@@ -268,7 +269,7 @@ class MultiDatasetLoader:
                     self.num_datasets, 1, p=self._dataset_probabilities
                 )[0]
 
-        choice = broadcast_scalar(choice, 0, device=registry.get("current_device"))
+        choice = broadcast_scalar(choice, 0, device=get_current_device())
         self.current_index = choice
         self.current_dataset = self.datasets[self.current_index]
         self.current_loader = self.loaders[self.current_index]

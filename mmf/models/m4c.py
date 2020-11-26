@@ -7,14 +7,14 @@ import torch
 import torch.nn.functional as F
 from mmf.common.registry import registry
 from mmf.models.base_model import BaseModel
-from mmf.modules.encoders import ImageFeatureEncoder
 from mmf.modules.layers import ClassifierLayer
+from mmf.utils.build import build_image_encoder
+from omegaconf import OmegaConf
 from torch import nn
 from transformers.modeling_bert import (
     BertConfig,
     BertEmbeddings,
     BertEncoder,
-    BertLayerNorm,
     BertPreTrainedModel,
 )
 
@@ -33,6 +33,12 @@ class M4C(BaseModel):
     def config_path(cls):
         return "configs/models/m4c/defaults.yaml"
 
+    @classmethod
+    def format_state_key(cls, key):
+        key = key.replace("obj_faster_rcnn_fc7.module.lc", "obj_faster_rcnn_fc7.lc")
+        key = key.replace("ocr_faster_rcnn_fc7.module.lc", "ocr_faster_rcnn_fc7.lc")
+        return key
+
     def build(self):
         # modules requiring custom learning rates (usually for finetuning)
         self.finetune_modules = []
@@ -43,6 +49,19 @@ class M4C(BaseModel):
         self._build_ocr_encoding()
         self._build_mmt()
         self._build_output()
+
+    def _build_encoder_config(self):
+        return OmegaConf.create(
+            {
+                "type": "finetune_faster_rcnn_fpn_fc7",
+                "params": {
+                    "in_dim": 2048,
+                    "weights_file": "models/detectron.defaults/fc7_w.pkl",
+                    "bias_file": "models/detectron.defaults/fc7_b.pkl",
+                    "model_data_dir": self.config.model_data_dir,
+                },
+            }
+        )
 
     def _build_txt_encoding(self):
         TEXT_BERT_HIDDEN_SIZE = 768
@@ -77,12 +96,8 @@ class M4C(BaseModel):
 
     def _build_obj_encoding(self):
         # object appearance feature: Faster R-CNN
-        self.obj_faster_rcnn_fc7 = ImageFeatureEncoder(
-            encoder_type="finetune_faster_rcnn_fpn_fc7",
-            in_dim=2048,
-            weights_file="models/detectron.defaults/fc7_w.pkl",
-            bias_file="models/detectron.defaults/fc7_b.pkl",
-            model_data_dir=self.config.model_data_dir,
+        self.obj_faster_rcnn_fc7 = build_image_encoder(
+            self._build_encoder_config(), direct_features=True
         )
         # apply smaller lr to pretrained Faster R-CNN fc7
         self.finetune_modules.append(
@@ -95,8 +110,8 @@ class M4C(BaseModel):
         # object location feature: relative bounding box coordinates (4-dim)
         self.linear_obj_bbox_to_mmt_in = nn.Linear(4, self.mmt_config.hidden_size)
 
-        self.obj_feat_layer_norm = BertLayerNorm(self.mmt_config.hidden_size)
-        self.obj_bbox_layer_norm = BertLayerNorm(self.mmt_config.hidden_size)
+        self.obj_feat_layer_norm = nn.LayerNorm(self.mmt_config.hidden_size)
+        self.obj_bbox_layer_norm = nn.LayerNorm(self.mmt_config.hidden_size)
         self.obj_drop = nn.Dropout(self.config.obj.dropout_prob)
 
     def _build_ocr_encoding(self):
@@ -111,12 +126,8 @@ class M4C(BaseModel):
         self.remove_ocr_bbox = getattr(self.config.ocr, "remove_ocr_bbox", False)
 
         # OCR appearance feature: Faster R-CNN
-        self.ocr_faster_rcnn_fc7 = ImageFeatureEncoder(
-            encoder_type="finetune_faster_rcnn_fpn_fc7",
-            in_dim=2048,
-            weights_file="models/detectron.defaults/fc7_w.pkl",
-            bias_file="models/detectron.defaults/fc7_b.pkl",
-            model_data_dir=self.config.model_data_dir,
+        self.ocr_faster_rcnn_fc7 = build_image_encoder(
+            self._build_encoder_config(), direct_features=True
         )
         self.finetune_modules.append(
             {"module": self.ocr_faster_rcnn_fc7, "lr_scale": self.config.lr_scale_frcn}
@@ -129,8 +140,8 @@ class M4C(BaseModel):
         # OCR location feature: relative bounding box coordinates (4-dim)
         self.linear_ocr_bbox_to_mmt_in = nn.Linear(4, self.mmt_config.hidden_size)
 
-        self.ocr_feat_layer_norm = BertLayerNorm(self.mmt_config.hidden_size)
-        self.ocr_bbox_layer_norm = BertLayerNorm(self.mmt_config.hidden_size)
+        self.ocr_feat_layer_norm = nn.LayerNorm(self.mmt_config.hidden_size)
+        self.ocr_bbox_layer_norm = nn.LayerNorm(self.mmt_config.hidden_size)
         self.ocr_drop = nn.Dropout(self.config.ocr.dropout_prob)
 
     def _build_mmt(self):
@@ -493,9 +504,9 @@ class PrevPredEmbeddings(nn.Module):
         self.position_embeddings = nn.Embedding(MAX_DEC_LENGTH, hidden_size)
         self.token_type_embeddings = nn.Embedding(MAX_TYPE_NUM, hidden_size)
 
-        self.ans_layer_norm = BertLayerNorm(hidden_size, eps=ln_eps)
-        self.ocr_layer_norm = BertLayerNorm(hidden_size, eps=ln_eps)
-        self.emb_layer_norm = BertLayerNorm(hidden_size, eps=ln_eps)
+        self.ans_layer_norm = nn.LayerNorm(hidden_size, eps=ln_eps)
+        self.ocr_layer_norm = nn.LayerNorm(hidden_size, eps=ln_eps)
+        self.emb_layer_norm = nn.LayerNorm(hidden_size, eps=ln_eps)
         self.emb_dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, ans_emb, ocr_emb, prev_inds):

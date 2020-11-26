@@ -16,20 +16,22 @@ Please cite the following paper if you use these models and the hateful memes da
 ```
 * [Citation for MMF](https://github.com/facebookresearch/mmf/tree/master/README.md#citation)
 
-Links: [[arxiv]](https://arxiv.org/abs/2005.04790) [[challenge]](https://www.drivendata.org/competitions/64/hateful-memes/) [[blog post]](https://ai.facebook.com/blog/hateful-memes-challenge-and-data-set)
+Links: [[arxiv]](https://arxiv.org/abs/2005.04790) [[challenge]](https://www.drivendata.org/competitions/70/hateful-memes-phase-2/) [[blog post]](https://ai.facebook.com/blog/hateful-memes-challenge-and-data-set)
 
 ## Prerequisites
 
 Install MMF following the [installation docs](https://mmf.sh/docs/getting_started/installation/).
 
 
-To acquire the data, you will need to register at DrivenData's Hateful Memes Competition and download data from the challenge's [download page](https://www.drivendata.org/competitions/64/hateful-memes/data/). MMF won't be able to automatically download the data since you manually need to agree to the licensing terms. Follow the steps below to convert data into MMF format.
+To acquire the data, you will need to register at DrivenData's Hateful Memes Competition and download data from the challenge's [download page](https://www.drivendata.org/competitions/70/hateful-memes-phase-2/data/). MMF won't be able to automatically download the data since you manually need to agree to the licensing terms. Follow the steps below to convert data into MMF format.
 
 1. Download the zip file with data from DrivenData at location `x`.
 2. Note the password from the data download page at DrivenData as `y`
 3. Run `mmf_convert_hm --zip_file=x --password=y` where you replace `x` with location of your zip file and `y` with the password you noted.
 4. Previous command will unzip and format your files into MMF format. This command can take time while unzipping.
 5. Continue, with steps below.
+
+> NOTE: If the command fails with checksum failed, please use `--bypass_checksum=1` option to try without checksum.
 
 ## Reproducing Baselines
 
@@ -56,7 +58,7 @@ For individual baselines and their proper citation have a look at their project 
 
 ## Training
 
-Run the following the command, and in general follow MMF's [configuration]() principles to update any parameter if needed:
+Run the following the command, and in general follow MMF's [configuration](https://mmf.sh/docs/notes/configuration) principles to update any parameter if needed:
 
 ```
 mmf_run config=<REPLACE_WITH_BASELINE_CONFIG> model=<REPLACE_WITH_MODEL_KEY> dataset=hateful_memes
@@ -69,7 +71,7 @@ This will save the training outputs to an experiment folder under `./save` direc
 For running evaluation on validation set run the following command:
 ```
 mmf_run config=<REPLACE_WITH_BASELINE_CONFIG> model=<REPLACE_WITH_MODEL_KEY> dataset=hateful_memes \
-run_type=val checkpoint.resume_file=<path_to_best_trained_model>
+run_type=val checkpoint.resume_file=<path_to_best_trained_model> checkpoint.resume_pretrained=False
 ```
 
 `checkpoint.resume_file` should point to the location of your trained model. This will load the trained model and generate scores on the validation set.
@@ -80,17 +82,28 @@ For running inference (will generate a csv) on validation set run the following 
 
 ```
 mmf_predict config=<REPLACE_WITH_BASELINE_CONFIG> model=<REPLACE_WITH_MODEL_KEY> dataset=hateful_memes \
-run_type=val checkpoint.resume_file=<path_to_best_trained_model>
+run_type=val checkpoint.resume_file=<path_to_best_trained_model> checkpoint.resume_pretrained=False
 ```
 
 For running inference (will generate a csv) on test set run the following command:
 
 ```
 mmf_predict config=<REPLACE_WITH_BASELINE_CONFIG> model=<REPLACE_WITH_MODEL_KEY> dataset=hateful_memes \
-run_type=test checkpoint.resume_file=<path_to_best_trained_model>
+run_type=test checkpoint.resume_file=<path_to_best_trained_model> checkpoint.resume_pretrained=False
 ```
 
 **NOTE**: All `mmf_predict` commands for the Hateful Memes challenge will generate a csv which you can then submit to DrivenData.
+
+### Predicting for Phase 1
+
+If you want to submit prediction for phase 1, you will need to use command line opts to override the jsonl files that are loaded. At the end of any command you run, add the following to load seen dev and test splits:
+
+```sh
+dataset_config.hateful_memes.annotations.val[0]=hateful_memes/defaults/annotations/dev_seen.jsonl \
+dataset_config.hateful_memes.annotations.test[0]=hateful_memes/defaults/annotations/test_seen.jsonl
+```
+
+This will load the phase 1 files for you and evaluate those.
 
 ## Evaluating Pretrained Models
 
@@ -98,7 +111,7 @@ For evaluating pretrained models on validation set, use the following command:
 
 ```
 mmf_run config=<REPLACE_WITH_BASELINE_CONFIG> model=<REPLACE_WITH_MODEL_KEY> dataset=hateful_memes \
-run_type=val checkpoint.resume_zoo=<REPLACE_WITH_PRETRAINED_ZOO_KEY>
+run_type=val checkpoint.resume_zoo=<REPLACE_WITH_PRETRAINED_ZOO_KEY> checkpoint.resume_pretrained=False
 ```
 
 To generate predictions using pretrained models, use the following command:
@@ -106,7 +119,7 @@ To generate predictions using pretrained models, use the following command:
 
 ```
 mmf_predict config=<REPLACE_WITH_BASELINE_CONFIG> model=<REPLACE_WITH_MODEL_KEY> dataset=hateful_memes \
-run_type=test checkpoint.resume_zoo=<REPLACE_WITH_PRETRAINED_ZOO_KEY>
+run_type=test checkpoint.resume_zoo=<REPLACE_WITH_PRETRAINED_ZOO_KEY> checkpoint.resume_pretrained=False
 ```
 
 ## Loading pretrained model in your code
