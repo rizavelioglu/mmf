@@ -54,10 +54,10 @@ class HatefulMemesBuilder(MMFDatasetBuilder):
             )
         )
         # NOTE: This doesn't check for files, but that is a fine assumption for now
-        assert PathManager.exists(test_path), (
-            "Hateful Memes Dataset doesn't do automatic downloads; please "
-            + "follow instructions at https://fb.me/hm_prerequisites"
-        )
+#         assert PathManager.exists(test_path), (
+#             "Hateful Memes Dataset doesn't do automatic downloads; please "
+#             + "follow instructions at https://fb.me/hm_prerequisites"
+#         )
         super().build(config, *args, **kwargs)
 
     def update_registry_for_model(self, config):
