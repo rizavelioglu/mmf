@@ -75,7 +75,7 @@ import re
 import warnings
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import torch
@@ -86,6 +86,7 @@ from mmf.utils.distributed import is_master, synchronize
 from mmf.utils.file_io import PathManager
 from mmf.utils.text import VocabDict
 from mmf.utils.vocab import Vocab, WordToVectorDict
+from omegaconf import DictConfig
 
 
 logger = logging.getLogger(__name__)
@@ -106,7 +107,7 @@ class BaseProcessor:
 
     """
 
-    def __init__(self, config: Dict[str, Any], *args, **kwargs):
+    def __init__(self, *args, config: Optional[DictConfig] = None, **kwargs):
         return
 
     def __call__(self, item: Any, *args, **kwargs) -> Any:
@@ -145,7 +146,7 @@ class Processor:
         processor_class = registry.get_processor_class(config.type)
 
         params = {}
-        if not hasattr(config, "params"):
+        if "params" not in config:
             logger.warning(
                 "Config doesn't have 'params' attribute to "
                 "specify parameters of the processor "
@@ -1493,3 +1494,56 @@ class MultiClassFromFile(BaseProcessor):
         assert class_index != -1, f"{label} is not present in vocab file"
 
         return {"class_index": torch.tensor(class_index, dtype=torch.long)}
+
+
+@registry.register_processor("detr_image_and_target")
+class DETRImageAndTargetProcessor(BaseProcessor):
+    """Process a detection image and target in consistent with DETR. At training time,
+    random crop is done. At test time, an image is deterministically resized with short
+    side equal to `image_size` (while ensuring its long side no larger than `max_size`)
+    """
+
+    def __init__(self, config, *args, **kwargs):
+        super().__init__(config, *args, **kwargs)
+
+        from mmf.datasets.processors import detection_transforms as T
+
+        train_image_sizes = list(config.train_image_sizes)
+        self.training_transform = T.Compose(
+            [
+                T.RandomHorizontalFlip(),
+                T.RandomSelect(
+                    T.RandomResize(train_image_sizes, max_size=config.max_size),
+                    T.Compose(
+                        [
+                            T.RandomResize(list(config.train_resize_random_sizes)),
+                            T.RandomSizeCrop(*config.train_crop_size),
+                            T.RandomResize(train_image_sizes, max_size=config.max_size),
+                        ]
+                    ),
+                ),
+                T.ToTensor(),
+                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ]
+        )
+        self.inference_transform = T.Compose(
+            [
+                T.RandomResize([config.test_image_size], max_size=config.max_size),
+                T.ToTensor(),
+                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ]
+        )
+
+    def __call__(self, item):
+        dataset_type = item["dataset_type"]
+        img = item["img"]
+        target = item["target"]
+
+        if dataset_type == "train":
+            img, target = self.training_transform(img, target)
+        elif dataset_type == "val" or dataset_type == "test":
+            img, target = self.inference_transform(img, target)
+        else:
+            raise Exception(f"unknown dataset_type: {dataset_type}")
+
+        return {"img": img, "target": target}

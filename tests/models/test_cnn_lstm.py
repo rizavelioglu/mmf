@@ -1,4 +1,5 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
+import gc
 import os
 import unittest
 
@@ -8,7 +9,7 @@ from mmf.common.registry import registry
 from mmf.common.sample import Sample, SampleList
 from mmf.models.cnn_lstm import CNNLSTM
 from mmf.utils.configuration import Configuration
-from mmf.utils.general import get_mmf_root
+from mmf.utils.general import get_current_device, get_mmf_root
 from tests.test_utils import dummy_args
 
 
@@ -35,6 +36,13 @@ class TestModelCNNLSTM(unittest.TestCase):
         self.config = configuration.config
         registry.register("config", self.config)
 
+    def tearDown(self):
+        registry.unregister("clevr_text_vocab_size")
+        registry.unregister("clevr_num_final_outputs")
+        registry.unregister("config")
+        del self.config
+        gc.collect()
+
     def test_forward(self):
         model_config = self.config.model_config.cnn_lstm
 
@@ -52,6 +60,10 @@ class TestModelCNNLSTM(unittest.TestCase):
         test_sample_list = SampleList([test_sample])
         test_sample_list.dataset_type = "train"
         test_sample_list.dataset_name = "clevr"
+
+        test_sample_list = test_sample_list.to(get_current_device())
+        cnn_lstm = cnn_lstm.to(get_current_device())
+
         output = cnn_lstm(test_sample_list)
 
         scores = output["scores"]

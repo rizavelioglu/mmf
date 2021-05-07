@@ -12,17 +12,19 @@ These can be replaced if your particular file system does not support them.
 import collections
 import datetime
 import hashlib
+import io
 import json
 import os
 import shutil
 import time
 from pathlib import Path
 
+import numpy as np
 import requests
 import tqdm
-from mmf.utils.distributed import is_master, synchronize
 from mmf.utils.file_io import PathManager
 from mmf.utils.general import get_absolute_path
+from PIL import Image
 
 
 class DownloadableFile:
@@ -332,9 +334,8 @@ def check_header(url, from_google=False):
 
 def download_pretrained_model(model_name, *args, **kwargs):
     import omegaconf
-    from omegaconf import OmegaConf
-
     from mmf.utils.configuration import get_mmf_env, load_yaml
+    from omegaconf import OmegaConf
 
     model_zoo = load_yaml(get_mmf_env(key="model_zoo"))
     OmegaConf.set_struct(model_zoo, True)
@@ -374,9 +375,7 @@ def download_pretrained_model(model_name, *args, **kwargs):
     version = model_config.version
     resources = model_config.resources
 
-    if is_master():
-        download_resources(resources, download_path, version)
-    synchronize()
+    download_resources(resources, download_path, version)
 
     return download_path
 
@@ -492,3 +491,9 @@ def download_from_google_drive(gd_id, destination, redownload=True):
         response.close()
 
     return download
+
+
+def get_image_from_url(url):
+    response = requests.get(url)
+    img = np.array(Image.open(io.BytesIO(response.content)))
+    return img

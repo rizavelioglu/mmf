@@ -69,14 +69,15 @@ class TestLogisticsCallback(unittest.TestCase):
         # Keep original copy for testing purposes
         self.trainer.config = deepcopy(self.config)
         registry.register("config", self.trainer.config)
-        setup_logger.cache_clear()
         setup_logger()
         self.report = Mock(spec=Report)
         self.report.dataset_name = "abcd"
         self.report.dataset_type = "test"
 
         self.trainer.model = SimpleModule()
-        self.trainer.val_dataset = NumbersDataset()
+        self.trainer.val_loader = torch.utils.data.DataLoader(
+            NumbersDataset(), batch_size=self.config.training.batch_size
+        )
 
         self.trainer.optimizer = torch.optim.Adam(
             self.trainer.model.parameters(), lr=1e-01

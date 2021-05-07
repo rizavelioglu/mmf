@@ -23,6 +23,9 @@ Various decorators for registry different kind of classes with unique keys
 - Register a encoder: ``@registry.register_encoder``
 - Register a decoder: ``@registry.register_decoder``
 - Register a transformer backend: ``@registry.register_transformer_backend``
+- Register a transformer head: ``@registry.register_transformer_head``
+- Register a test reporter: ``@registry.register_test_reporter``
+- Register a pl datamodule: ``@registry.register_datamodule``
 """
 from mmf.utils.env import setup_imports
 
@@ -51,6 +54,9 @@ class Registry:
         "encoder_name_mapping": {},
         "decoder_name_mapping": {},
         "transformer_backend_name_mapping": {},
+        "transformer_head_name_mapping": {},
+        "test_reporter_mapping": {},
+        "iteration_strategy_name_mapping": {},
         "state": {},
     }
 
@@ -278,6 +284,22 @@ class Registry:
         return wrap
 
     @classmethod
+    def register_transformer_head(cls, name):
+        def wrap(func):
+            cls.mapping["transformer_head_name_mapping"][name] = func
+            return func
+
+        return wrap
+
+    @classmethod
+    def register_test_reporter(cls, name):
+        def wrap(func):
+            cls.mapping["test_reporter_mapping"][name] = func
+            return func
+
+        return wrap
+
+    @classmethod
     def register_decoder(cls, name):
         r"""Register a decoder to registry with key 'name'
 
@@ -334,6 +356,72 @@ class Registry:
             ), "All encoders must inherit Encoder class"
             cls.mapping["encoder_name_mapping"][name] = encoder_cls
             return encoder_cls
+
+        return wrap
+
+    @classmethod
+    def register_datamodule(cls, name):
+        r"""Register a datamodule to registry with key 'name'
+
+        Args:
+            name: Key with which the datamodule will be registered.
+
+        Usage::
+
+            from mmf.common.registry import registry
+            import pytorch_lightning as pl
+
+
+            @registry.register_datamodule("my_datamodule")
+            class MyDataModule(pl.LightningDataModule):
+                ...
+
+        """
+
+        def wrap(datamodule_cls):
+            import pytorch_lightning as pl
+
+            assert issubclass(
+                datamodule_cls, pl.LightningDataModule
+            ), "All datamodules must inherit PyTorch Lightning DataModule class"
+            cls.mapping["builder_name_mapping"][name] = datamodule_cls
+            return datamodule_cls
+
+        return wrap
+
+    @classmethod
+    def register_iteration_strategy(cls, name):
+        r"""Register an iteration_strategy to registry with key 'name'
+
+        Args:
+            name: Key with which the iteration_strategy will be registered.
+
+        Usage::
+
+            from dataclasses import dataclass
+            from mmf.common.registry import registry
+            from mmf.datasets.iterators import IterationStrategy
+
+
+            @registry.register_iteration_strategy("my_iteration_strategy")
+            class MyStrategy(IterationStrategy):
+                @dataclass
+                class Config:
+                    name: str = "my_strategy"
+                def __init__(self, config, dataloader):
+                    ...
+        """
+
+        def wrap(iteration_strategy_cls):
+            from mmf.datasets.iteration_strategies import IterationStrategy
+
+            assert issubclass(
+                iteration_strategy_cls, IterationStrategy
+            ), "All datamodules must inherit IterationStrategy class"
+            cls.mapping["iteration_strategy_name_mapping"][
+                name
+            ] = iteration_strategy_cls
+            return iteration_strategy_cls
 
         return wrap
 
@@ -401,8 +489,20 @@ class Registry:
         return cls.mapping["encoder_name_mapping"].get(name, None)
 
     @classmethod
+    def get_iteration_strategy_class(cls, name):
+        return cls.mapping["iteration_strategy_name_mapping"].get(name, None)
+
+    @classmethod
     def get_transformer_backend_class(cls, name):
         return cls.mapping["transformer_backend_name_mapping"].get(name, None)
+
+    @classmethod
+    def get_transformer_head_class(cls, name):
+        return cls.mapping["transformer_head_name_mapping"].get(name, None)
+
+    @classmethod
+    def get_test_rerporter_class(cls, name):
+        return cls.mapping["test_reporter_mapping"].get(name, None)
 
     @classmethod
     def get(cls, name, default=None, no_warning=False):

@@ -1,8 +1,8 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
 """
-Models built on top of Pythia need to inherit ``BaseModel`` class and adhere to
-some format. To create a model for MMF, follow this quick cheatsheet.
+Models built in MMF need to inherit ``BaseModel`` class and adhere to
+a fixed format. To create a model for MMF, follow this quick cheatsheet.
 
 1. Inherit ``BaseModel`` class, make sure to call ``super().__init__()`` in your
    class's ``__init__`` function.
@@ -45,22 +45,25 @@ import logging
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Union
+from typing import List, Optional, Union
 
+import pytorch_lightning as pl
 from mmf.common.registry import registry
-from mmf.common.sample import to_device
-from mmf.modules.losses import Losses
+from mmf.common.report import Report
+from mmf.common.sample import SampleList, to_device
+from mmf.modules.losses import LossConfig, Losses
 from mmf.utils.checkpoint import load_pretrained_model
 from mmf.utils.download import download_pretrained_model
+from mmf.utils.file_io import PathManager
+from mmf.utils.general import get_current_device
 from omegaconf import MISSING, DictConfig, OmegaConf
-from torch import nn
 
 
 logger = logging.getLogger(__name__)
 
 
-class BaseModel(nn.Module):
-    """For integration with Pythia's trainer, datasets and other features,
+class BaseModel(pl.LightningModule):
+    """For integration with MMF's trainer, datasets and other features,
     models needs to inherit this class, call `super`, write a build function,
     write a forward function taking a ``SampleList`` as input and returning a
     dict as output and finally, register it using ``@registry.register_model``
@@ -74,6 +77,7 @@ class BaseModel(nn.Module):
     class Config:
         # Name of the model that is used in registry
         model: str = MISSING
+        losses: Optional[List[LossConfig]] = MISSING
 
     def __init__(self, config: Union[DictConfig, Config]):
         super().__init__()
@@ -81,8 +85,10 @@ class BaseModel(nn.Module):
             config = OmegaConf.structured(config)
 
         self.config = config
+
         self._logged_warning = {"losses_present": False}
         self._is_pretrained = False
+        self._is_pl_enabled = False
 
     @classmethod
     def from_params(cls, **kwargs):
@@ -92,9 +98,17 @@ class BaseModel(nn.Module):
     def is_pretrained(self):
         return self._is_pretrained
 
+    @property
+    def is_pl_enabled(self):
+        return self._is_pl_enabled
+
     @is_pretrained.setter
     def is_pretrained(self, x: bool):
         self._is_pretrained = x
+
+    @is_pl_enabled.setter
+    def is_pl_enabled(self, x: bool):
+        self._is_pl_enabled = x
 
     def build(self):
         """Function to be implemented by the child class, in case they need to
@@ -104,6 +118,12 @@ class BaseModel(nn.Module):
         raise NotImplementedError(
             "Build method not implemented in the child model class."
         )
+
+    def build_meters(self, run_type):
+        from mmf.utils.build import build_meters
+
+        """Function only used in lightning setting"""
+        self.train_meter, self.val_meter, self.test_meter = build_meters(run_type)
 
     def init_losses(self):
         """Initializes loss for the model based ``losses`` key. Automatically called by
@@ -124,8 +144,8 @@ class BaseModel(nn.Module):
 
     @classmethod
     def format_state_key(cls, key):
-        """Can be implemented if something special needs to be done
-        key when pretrained model is being load. This will adapt and return
+        """Can be implemented if something special needs to be done to the
+        key when pretrained model is being loaded. This will adapt and return
         keys according to that. Useful for backwards compatibility. See
         updated load_state_dict below. For an example, see VisualBERT model's
         code.
@@ -162,10 +182,84 @@ class BaseModel(nn.Module):
             "Forward of the child model class needs to be implemented."
         )
 
+    def training_step(self, batch: SampleList, batch_idx: int, *args, **kwargs):
+        """Member function of PL modules. Used only when PL enabled.
+        To be implemented by child class. Takes in a ``SampleList``,
+        batch_idx and returns back a dict.
+
+        Args:
+            sample_list (SampleList): SampleList returned by the DataLoader for
+            current iteration
+
+        Returns:
+            Dict: Dict containing loss.
+        """
+        output = self._forward_lightning_step(batch, batch_idx)
+        report = Report(batch, output)
+        self.train_meter.update_from_report(report)
+        return output
+
+    def validation_step(self, batch: SampleList, batch_idx: int, *args, **kwargs):
+        """Member function of PL modules. Used only when PL enabled.
+        To be implemented by child class. Takes in a ``SampleList``,
+        batch_idx and returns back a dict.
+
+        Args:
+            sample_list (SampleList): SampleList returned by the DataLoader for
+            current iteration
+
+        Returns:
+            Dict
+        """
+        output = self._forward_lightning_step(batch, batch_idx)
+        report = Report(batch, output)
+        self.val_meter.update_from_report(report)
+        report.metrics = self.metrics(report, report)
+        return output
+
+    def test_step(self, batch: SampleList, batch_idx: int, *args, **kwargs):
+        """Member function of PL modules. Used only when PL enabled.
+        To be implemented by child class. Takes in a ``SampleList``,
+        batch_idx and returns back a dict.
+
+        Args:
+            sample_list (SampleList): SampleList returned by the DataLoader for
+            current iteration
+
+        Returns:
+            Dict
+        """
+        return self._forward_lightning_step(batch, batch_idx)
+
+    def _forward_lightning_step(self, batch, batch_idx):
+        batch = self._ensure_sample_list(batch)
+        output = self(batch)
+        loss_dict = output["losses"]
+        output["loss"] = sum(loss.mean() for loss in loss_dict.values())
+        return output
+
+    def configure_optimizers(self):
+        """ Member function of PL modules. Used only when PL enabled."""
+        assert self._is_pl_enabled, (
+            "configure_optimizers should be only used as a member "
+            "function of LightningModule when pytorch lightning is enabled."
+        )
+
+        from mmf.utils.build import build_lightning_optimizers
+
+        config = registry.get("config")
+        return build_lightning_optimizers(self, config)
+
+    def _ensure_sample_list(self, batch):
+        if not isinstance(batch, SampleList):
+            # Try converting to SampleList
+            batch = SampleList(batch)
+        return batch
+
     def __call__(self, sample_list, *args, **kwargs):
-        # Move to proper device i.e. same as the model before passing
-        model_device = next(self.parameters()).device
-        sample_list = to_device(sample_list, model_device)
+        if not self._is_pl_enabled:
+            # Move to proper device i.e. same as the model before passing
+            sample_list = to_device(sample_list, get_current_device())
 
         model_output = super().__call__(sample_list, *args, **kwargs)
 
@@ -173,7 +267,7 @@ class BaseModel(nn.Module):
         if self.is_pretrained:
             return model_output
 
-        # Make sure theat the output from the model is a Mapping
+        # Make sure that the output from the model is a Mapping
         assert isinstance(
             model_output, collections.abc.Mapping
         ), "A dict must be returned from the forward of the model."
@@ -211,14 +305,27 @@ class BaseModel(nn.Module):
         return results
 
     @classmethod
-    def from_pretrained(cls, model_name, *args, **kwargs):
-        model_key = model_name.split(".")[0]
-        model_cls = registry.get_model_class(model_key)
-        assert (
-            model_cls == cls
-        ), f"Incorrect pretrained model key {model_name} for class {cls.__name__}"
-        output = load_pretrained_model(model_name, *args, **kwargs)
-        config, checkpoint = output["config"], output["checkpoint"]
+    def from_pretrained(cls, model_name_or_path, *args, **kwargs):
+        # Check if the path exists, if not it is pretrained, otherwise,
+        # we will try to load the checkpoint from the path
+        if not PathManager.exists(model_name_or_path):
+            model_key = model_name_or_path.split(".")[0]
+            model_cls = registry.get_model_class(model_key)
+            assert (
+                model_cls == cls
+            ), f"Incorrect pretrained model key {model_name_or_path} "
+            "for class {cls.__name__}"
+        output = load_pretrained_model(model_name_or_path, *args, **kwargs)
+        config, checkpoint, full_config = (
+            output["config"],
+            output["checkpoint"],
+            output["full_config"],
+        )
+
+        # Save original config for state reset later
+        config_temp_holder = registry.get("config")
+        # Register full config from checkpoint when loading the model
+        registry.register("config", full_config)
 
         # Some models need registry updates to be load pretrained model
         # If they have this method, call it so they can update accordingly
@@ -229,6 +336,9 @@ class BaseModel(nn.Module):
         instance.is_pretrained = True
         instance.build()
         incompatible_keys = instance.load_state_dict(checkpoint, strict=False)
+
+        # The model has loaded, reset the state
+        registry.register("config", config_temp_holder)
 
         if len(incompatible_keys.missing_keys) != 0:
             logger.warning(

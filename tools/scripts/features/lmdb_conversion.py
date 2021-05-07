@@ -8,6 +8,7 @@ import pickle
 import lmdb
 import numpy as np
 import tqdm
+from mmf.utils.file_io import PathManager
 
 
 class LMDBConversion:
@@ -92,7 +93,7 @@ class LMDBConversion:
                 tmp_dict["image_id"] = img_id
                 tmp_dict["bbox"] = item["bbox"]
                 tmp_dict["num_boxes"] = item["num_boxes"]
-                tmp_dict["image_height"] = item["image_width"]
+                tmp_dict["image_height"] = item["image_height"]
                 tmp_dict["image_width"] = item["image_width"]
                 tmp_dict["objects"] = item["objects"]
                 tmp_dict["cls_prob"] = item["cls_prob"]
@@ -100,14 +101,14 @@ class LMDBConversion:
                 info_file_base_name = str(img_id) + "_info.npy"
                 file_base_name = str(img_id) + ".npy"
 
-                np.save(
-                    os.path.join(self.args.features_folder, file_base_name),
-                    item["features"],
-                )
-                np.save(
-                    os.path.join(self.args.features_folder, info_file_base_name),
-                    tmp_dict,
-                )
+                path = os.path.join(self.args.features_folder, file_base_name)
+                if PathManager.exists(path):
+                    continue
+                info_path = os.path.join(self.args.features_folder, info_file_base_name)
+                base_path = "/".join(path.split("/")[:-1])
+                PathManager.mkdirs(base_path)
+                np.save(PathManager.open(path, "wb"), item["features"])
+                np.save(PathManager.open(info_path, "wb"), tmp_dict)
 
     def execute(self):
         if self.args.mode == "convert":

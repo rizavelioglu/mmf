@@ -1,5 +1,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
+import gc
 import unittest
 
 import torch
@@ -15,9 +16,13 @@ class TestOptimizers(unittest.TestCase):
             {"optimizer": {"type": "adam_w", "params": {"lr": 5e-5}}}
         )
 
-    def test_build_optimizer_simple_model(self):
-        model = SimpleModel(1)
+    def tearDown(self):
+        del self.config
+        gc.collect()
 
+    def test_build_optimizer_simple_model(self):
+        model = SimpleModel({"in_dim": 1})
+        model.build()
         optimizer = build_optimizer(model, self.config)
         self.assertTrue(isinstance(optimizer, torch.optim.Optimizer))
         self.assertEqual(len(optimizer.param_groups), 1)
